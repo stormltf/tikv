@@ -17,9 +17,10 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use mio::Token;
-use grpc::{RpcContext, UnarySink, ClientStreamingSink, RequestStream, RpcStatus, RpcStatusCode};
-use futures::{future, Future, Stream};
-use futures::sync::oneshot;
+use grpc::{RpcContext, UnarySink, ClientStreamingSink, RequestStream, DuplexSink, RpcStatus,
+           RpcStatusCode, WriteFlags};
+use futures::{future, Future, Stream, Sink};
+use futures::sync::{oneshot, mpsc};
 use protobuf::RepeatedField;
 use kvproto::tikvpb_grpc;
 use kvproto::raft_serverpb::*;
@@ -654,6 +655,46 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             })
             .and_then(|_| sink.success(Done::new()).map_err(Error::from))
             .then(|_| future::ok::<_, ()>(())));
+    }
+
+    fn raw_stream(&self,
+                  ctx: ::grpc::RpcContext,
+                  stream: RequestStream<RawRequest>,
+                  sink: DuplexSink<RawResponse>) {
+        let (tx, rx) = mpsc::unbounded();
+
+        ctx.spawn(rx.forward(sink.sink_map_err(|e| debug!("rawkv stream send failed: {:?}", e)))
+            .map(|_| ())
+            .map_err(|_| ()));
+
+        let storage = self.storage.clone();
+        ctx.spawn(stream.map_err(Error::from)
+            .for_each(move |mut req| {
+                let mut raw_put = req.take_raw_put();
+                let msg_id = req.get_msg_id();
+                let (cb, future) = make_callback();
+                storage.async_raw_put(raw_put.take_context(),
+                                           raw_put.take_key(),
+                                           raw_put.take_value(),
+                                           cb).unwrap();
+                let tx = tx.clone();
+                future.map_err(Error::from)
+                    .map(move |v| {
+                        let mut raw_put = RawPutResponse::new();
+                        if let Some(err) = extract_region_error(&v) {
+                            raw_put.set_region_error(err);
+                        } else if let Err(e) = v {
+                            raw_put.set_error(format!("{}", e));
+                        }
+                        let mut resp = RawResponse::new();
+                        resp.set_msg_id(msg_id);
+                        resp.set_raw_put(raw_put);
+                        resp
+                    })
+                    .and_then(move |res| tx.send((res, WriteFlags::default())).map_err(|e| box_err!(e)))
+                    .map(|_| ())
+            })
+            .map_err(|e| error!("rawkv stream err: {}", e)));
     }
 }
 
