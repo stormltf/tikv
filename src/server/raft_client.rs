@@ -57,27 +57,33 @@ impl Conn {
 /// `RaftClient` is used for sending raft messages to other stores.
 pub struct RaftClient {
     env: Arc<Environment>,
-    conns: HashMap<SocketAddr, Conn>,
+    conns: HashMap<(SocketAddr, usize), Conn>,
+    conn_size: usize,
+    conn_index: usize,
 }
 
 impl RaftClient {
-    pub fn new(env: Arc<Environment>) -> RaftClient {
+    pub fn new(env: Arc<Environment>, conn_size: usize) -> RaftClient {
         RaftClient {
             env: env,
             conns: HashMap::default(),
+            conn_size: conn_size,
+            conn_index: 0,
         }
     }
 
-    fn get_conn(&mut self, addr: SocketAddr) -> &Conn {
+    fn get_conn(&mut self, addr: SocketAddr, index: usize) -> &Conn {
         let env = self.env.clone();
         self.conns
-            .entry(addr)
+            .entry((addr, index))
             .or_insert_with(|| Conn::new(env, addr))
     }
 
     pub fn send(&mut self, addr: SocketAddr, msgs: Vec<RaftMessage>) -> Result<()> {
+        self.conn_index = (self.conn_index + 1) % self.conn_size;
+        let index = self.conn_index;
         let res = {
-            let conn = self.get_conn(addr);
+            let conn = self.get_conn(addr, index);
             let len = msgs.len();
             let mut res = Ok(());
             for (i, msg) in msgs.into_iter().enumerate() {
@@ -97,7 +103,7 @@ impl RaftClient {
             warn!("server: drop conn with tikv endpoint {} error: {:?}",
                   addr,
                   e);
-            self.conns.remove(&addr);
+            self.conns.remove(&(addr, index));
             return Err(box_err!(e));
         }
         Ok(())
