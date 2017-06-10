@@ -24,6 +24,8 @@ use kvproto::tikvpb_grpc::TikvClient;
 use util::collections::HashMap;
 use super::{Error, Result};
 
+const GRPC_WRITE_BUFFER_SIZE: usize = 2 * 1024 * 1024;
+
 struct Conn {
     _client: TikvClient,
     stream: UnboundedSender<(RaftMessage, WriteFlags)>,
@@ -34,7 +36,9 @@ impl Conn {
     fn new(env: Arc<Environment>, addr: SocketAddr) -> Conn {
         info!("server: new connection with tikv endpoint: {}", addr);
 
-        let channel = ChannelBuilder::new(env).connect(&format!("{}", addr));
+        let channel = ChannelBuilder::new(env)
+            .http2_write_buffer_size(GRPC_WRITE_BUFFER_SIZE)
+            .connect(&format!("{}", addr));
         let client = TikvClient::new(channel);
         let (tx, rx) = mpsc::unbounded();
         let (tx_close, rx_close) = oneshot::channel();
