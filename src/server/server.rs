@@ -26,7 +26,7 @@ use util::transport::SendCh;
 use storage::Storage;
 use raftstore::store::{SnapshotStatusMsg, SnapManager};
 use raft::SnapshotStatus;
-use util::collections::{HashMap, HashSet};
+use util::collections::{HashMap, HashSet, FlatMap};
 
 use super::Msg;
 use super::{Result, Config};
@@ -170,19 +170,24 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Server<T, S> {
         self.local_addr
     }
 
-    fn write_data(&mut self, addr: SocketAddr, msg: RaftMessage) {
-        if let Err(e) = self.raft_client.send(addr, msg) {
+    fn write_data(&mut self, addr: SocketAddr, msgs: Vec<RaftMessage>) {
+        let (snapshots, others): (Vec<RaftMessage>, Vec<RaftMessage>) = msgs.into_iter()
+            .partition(|msg| msg.get_message().has_snapshot());
+        for msg in snapshots {
+            self.send_snapshot_sock(addr, msg);
+        }
+        if let Err(e) = self.raft_client.send(addr, others) {
             error!("send raft msg err {:?}", e);
         }
     }
 
-    fn resolve_store(&mut self, store_id: u64, msg: RaftMessage) {
+    fn resolve_store(&mut self, store_id: u64, msgs: Vec<RaftMessage>) {
         let ch = self.sendch.clone();
         let cb = box move |r| {
             if let Err(e) = ch.send(Msg::ResolveResult {
                 store_id: store_id,
                 sock_addr: r,
-                msg: msg,
+                msgs: msgs,
             }) {
                 error!("send store sock msg err {:?}", e);
             }
@@ -192,72 +197,75 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Server<T, S> {
         }
     }
 
-    fn report_unreachable(&self, msg: RaftMessage) {
-        let region_id = msg.get_region_id();
-        let to_peer_id = msg.get_to_peer().get_id();
-        let to_store_id = msg.get_to_peer().get_store_id();
+    pub fn report_unreachable(&self, msgs: Vec<RaftMessage>) {
+        for msg in msgs {
+            let region_id = msg.get_region_id();
+            let to_peer_id = msg.get_to_peer().get_id();
+            let to_store_id = msg.get_to_peer().get_store_id();
 
-        if let Err(e) = self.ch.raft_router.report_unreachable(region_id, to_peer_id, to_store_id) {
-            error!("report peer {} unreachable for region {} failed {:?}",
-                   to_peer_id,
-                   region_id,
-                   e);
+            if let Err(e) = self.ch
+                .raft_router
+                .report_unreachable(region_id, to_peer_id, to_store_id) {
+                error!("report peer {} unreachable for region {} failed {:?}",
+                       to_peer_id,
+                       region_id,
+                       e);
+            }
         }
     }
 
-    fn send_store(&mut self, store_id: u64, msg: RaftMessage) {
-        if msg.get_message().has_snapshot() {
-            RESOLVE_STORE_COUNTER.with_label_values(&["snap"]).inc();
-            return self.resolve_store(store_id, msg);
-        }
-
+    fn send_store(&mut self, store_id: u64, msgs: Vec<RaftMessage>) {
         // check the corresponding token for store.
         if let Some(addr) = self.store_addrs.get(&store_id).cloned() {
-            return self.write_data(addr, msg);
+            return self.write_data(addr, msgs);
         }
 
         // No connection, try to resolve it.
         if self.store_resolving.contains(&store_id) {
             RESOLVE_STORE_COUNTER.with_label_values(&["resolving"]).inc();
             // If we are resolving the address, drop the message here.
-            debug!("store {} address is being resolved, drop msg {:?}",
+            debug!("store {} address is being resolved, drop {} msgs",
                    store_id,
-                   msg);
-            self.report_unreachable(msg);
+                   msgs.len());
+            self.report_unreachable(msgs);
             return;
         }
 
         debug!("begin to resolve store {} address", store_id);
-        RESOLVE_STORE_COUNTER.with_label_values(&["store"]).inc();
+        RESOLVE_STORE_COUNTER.with_label_values(&["resolve"]).inc();
         self.store_resolving.insert(store_id);
-        self.resolve_store(store_id, msg);
+        self.resolve_store(store_id, msgs);
+    }
+
+    fn send_all(&mut self, msgs: Vec<RaftMessage>) {
+        let mut m = FlatMap::new();
+        for msg in msgs {
+            let entry = m.entry(msg.get_to_peer().get_store_id()).or_insert_with(|| vec![]);
+            entry.push(msg);
+        }
+        for (store_id, msgs) in m {
+            self.send_store(store_id, msgs);
+        }
     }
 
     fn on_resolve_result(&mut self,
                          store_id: u64,
                          sock_addr: Result<SocketAddr>,
-                         msg: RaftMessage) {
-        if !msg.get_message().has_snapshot() {
-            // clear resolving.
-            self.store_resolving.remove(&store_id);
-        }
+                         msgs: Vec<RaftMessage>) {
+        // clear resolving.
+        self.store_resolving.remove(&store_id);
 
         if let Err(e) = sock_addr {
             RESOLVE_STORE_COUNTER.with_label_values(&["failed"]).inc();
             debug!("resolve store {} address failed {:?}", store_id, e);
-            return self.report_unreachable(msg);
+            return self.report_unreachable(msgs);
         }
 
         RESOLVE_STORE_COUNTER.with_label_values(&["success"]).inc();
         let sock_addr = sock_addr.unwrap();
         info!("resolve store {} address ok, addr {}", store_id, sock_addr);
         self.store_addrs.insert(store_id, sock_addr);
-
-        if msg.get_message().has_snapshot() {
-            return self.send_snapshot_sock(sock_addr, msg);
-        }
-
-        self.write_data(sock_addr, msg)
+        self.write_data(sock_addr, msgs)
     }
 
     fn new_snapshot_reporter(&self, msg: &RaftMessage) -> SnapshotReporter {
@@ -302,9 +310,9 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Handler for Server<T, S> {
     fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: Msg) {
         match msg {
             Msg::Quit => event_loop.shutdown(),
-            Msg::SendStore { store_id, msg } => self.send_store(store_id, msg),
-            Msg::ResolveResult { store_id, sock_addr, msg } => {
-                self.on_resolve_result(store_id, sock_addr, msg)
+            Msg::SendStore { msgs } => self.send_all(msgs),
+            Msg::ResolveResult { store_id, sock_addr, msgs } => {
+                self.on_resolve_result(store_id, sock_addr, msgs)
             }
             Msg::CloseConn { .. } => {}
         }
@@ -457,7 +465,7 @@ mod tests {
 
         for i in 0..10 {
             if i % 2 == 1 {
-                server.report_unreachable(RaftMessage::new());
+                server.report_unreachable(vec![RaftMessage::new()]);
             }
             assert_eq!(report_unreachable_count.load(Ordering::SeqCst), (i + 1) / 2);
         }
@@ -467,10 +475,7 @@ mod tests {
             server.run(&mut event_loop).unwrap();
         });
 
-        ch.try_send(Msg::SendStore {
-                store_id: 1,
-                msg: RaftMessage::new(),
-            })
+        ch.try_send(Msg::SendStore { msgs: vec![RaftMessage::new()] })
             .unwrap();
 
         rx.recv().unwrap();

@@ -119,12 +119,12 @@ impl ServerTransport {
 
 impl Transport for ServerTransport {
     fn send(&self, msg: RaftMessage) -> RaftStoreResult<()> {
-        let to_store_id = msg.get_to_peer().get_store_id();
+        try!(self.ch.try_send(Msg::SendStore { msgs: vec![msg] }));
+        Ok(())
+    }
 
-        try!(self.ch.try_send(Msg::SendStore {
-            store_id: to_store_id,
-            msg: msg,
-        }));
+    fn send_all(&self, msgs: Vec<RaftMessage>) -> RaftStoreResult<()> {
+        try!(self.ch.try_send(Msg::SendStore { msgs: msgs }));
         Ok(())
     }
 }

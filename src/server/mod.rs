@@ -46,12 +46,12 @@ pub enum Msg {
     // Quit event loop.
     Quit,
     // Send data to remote store.
-    SendStore { store_id: u64, msg: RaftMessage },
+    SendStore { msgs: Vec<RaftMessage> },
     // Resolve store address result.
     ResolveResult {
         store_id: u64,
         sock_addr: Result<SocketAddr>,
-        msg: RaftMessage,
+        msgs: Vec<RaftMessage>,
     },
     CloseConn { token: Token },
 }
