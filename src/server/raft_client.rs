@@ -59,7 +59,6 @@ pub struct RaftClient {
     env: Arc<Environment>,
     conns: HashMap<(SocketAddr, usize), Conn>,
     conn_size: usize,
-    conn_index: usize,
 }
 
 impl RaftClient {
@@ -68,7 +67,6 @@ impl RaftClient {
             env: env,
             conns: HashMap::default(),
             conn_size: conn_size,
-            conn_index: 0,
         }
     }
 
@@ -80,8 +78,7 @@ impl RaftClient {
     }
 
     pub fn send(&mut self, addr: SocketAddr, msg: RaftMessage) -> Result<()> {
-        self.conn_index = (self.conn_index + 1) % self.conn_size;
-        let index = self.conn_index;
+        let index = msg.get_region_id() as usize % self.conn_size;
         let res = {
             let conn = self.get_conn(addr, index);
             UnboundedSender::send(&conn.stream, (msg, WriteFlags::default()))
