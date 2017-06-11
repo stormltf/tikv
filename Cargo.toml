@@ -84,7 +84,7 @@ features = ["nightly", "push", "process"]
 
 [dependencies.grpc]
 git = "https://github.com/pingcap/grpc-rs.git"
-branch = "busyjay/dev"
+branch = "busyjay/reduce-alarm"
 features = ["static-link"]
 
 [dependencies.jemallocator]

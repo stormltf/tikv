@@ -12,7 +12,7 @@ dependencies = [
  "fnv 1.0.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "fs2 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures 0.1.14 (registry+https://github.com/rust-lang/crates.io-index)",
- "grpc 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/dev)",
+ "grpc 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/reduce-alarm)",
  "jemallocator 0.1.0 (git+https://github.com/busyjay/jemallocator.git?branch=dev)",
  "kvproto 0.0.1 (git+https://github.com/pingcap/kvproto.git?branch=grpc-dev)",
  "lazy_static 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -258,10 +258,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "grpc"
 version = "0.1.0"
-source = "git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/dev#ae0ce11e6f9704696bc7ed9aeeb542dd33a5235e"
+source = "git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/reduce-alarm#ef6af0349c27e748095a19b7a553ca91ec378735"
 dependencies = [
  "futures 0.1.14 (registry+https://github.com/rust-lang/crates.io-index)",
- "grpc-sys 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/dev)",
+ "grpc-sys 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/reduce-alarm)",
  "libc 0.2.21 (registry+https://github.com/rust-lang/crates.io-index)",
  "protobuf 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -269,7 +269,7 @@ dependencies = [
 [[package]]
 name = "grpc-sys"
 version = "0.1.0"
-source = "git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/dev#ae0ce11e6f9704696bc7ed9aeeb542dd33a5235e"
+source = "git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/reduce-alarm#ef6af0349c27e748095a19b7a553ca91ec378735"
 dependencies = [
  "cmake 0.1.22 (registry+https://github.com/rust-lang/crates.io-index)",
  "gcc 0.3.35 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -371,10 +371,10 @@ dependencies = [
 [[package]]
 name = "kvproto"
 version = "0.0.1"
-source = "git+https://github.com/pingcap/kvproto.git?branch=grpc-dev#30719b99f1f46e049ef422076a5748e769e58c50"
+source = "git+https://github.com/pingcap/kvproto.git?branch=grpc-dev#33890bdc94d1a4e4b0d1df94beb56018aa1a2e42"
 dependencies = [
  "futures 0.1.14 (registry+https://github.com/rust-lang/crates.io-index)",
- "grpc 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/dev)",
+ "grpc 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/reduce-alarm)",
  "protobuf 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -1085,8 +1085,8 @@ dependencies = [
 "checksum fs2 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "237b7991317b8d94391c0a4813b1f74fd81c11352440cd598d2b763ed288bfc1"
 "checksum futures 0.1.14 (registry+https://github.com/rust-lang/crates.io-index)" = "4b63a4792d4f8f686defe3b39b92127fea6344de5d38202b2ee5a11bbbf29d6a"
 "checksum gcc 0.3.35 (registry+https://github.com/rust-lang/crates.io-index)" = "91ecd03771effb0c968fd6950b37e89476a578aaf1c70297d8e92b6516ec3312"
-"checksum grpc 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/dev)" = "<none>"
-"checksum grpc-sys 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/dev)" = "<none>"
+"checksum grpc 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/reduce-alarm)" = "<none>"
+"checksum grpc-sys 0.1.0 (git+https://github.com/pingcap/grpc-rs.git?branch=busyjay/reduce-alarm)" = "<none>"
 "checksum hpack 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "3d2da7d3a34cf6406d9d700111b8eafafe9a251de41ae71d8052748259343b58"
 "checksum httparse 1.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "46534074dbb80b070d60a5cb8ecadd8963a00a438ae1a95268850a7ef73b67ae"
 "checksum hyper 0.9.10 (registry+https://github.com/rust-lang/crates.io-index)" = "eb27e8a3e8f17ac43ffa41bbda9cf5ad3f9f13ef66fa4873409d4902310275f7"
