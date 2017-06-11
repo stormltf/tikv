@@ -21,6 +21,7 @@ use grpc::{RpcContext, UnarySink, ClientStreamingSink, RequestStream, DuplexSink
            RpcStatusCode, WriteFlags};
 use futures::{future, Future, Stream, Sink};
 use futures::sync::{oneshot, mpsc};
+use futures_cpupool::{CpuPool, Builder};
 use protobuf::RepeatedField;
 use kvproto::tikvpb_grpc;
 use kvproto::raft_serverpb::*;
@@ -53,6 +54,7 @@ pub struct Service<T: RaftStoreRouter + 'static> {
     // For handling snapshot.
     snap_scheduler: Scheduler<SnapTask>,
     token: Arc<AtomicUsize>, // TODO: remove it.
+    pool: CpuPool,
 }
 
 impl<T: RaftStoreRouter + 'static> Service<T> {
@@ -67,6 +69,7 @@ impl<T: RaftStoreRouter + 'static> Service<T> {
             ch: ch,
             snap_scheduler: snap_scheduler,
             token: Arc::new(AtomicUsize::new(1)),
+            pool: Builder::new().name_prefix("service-poller").pool_size(1).create(),
         }
     }
 
@@ -668,6 +671,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
             .map_err(|_| ()));
 
         let storage = self.storage.clone();
+        let pool = self.pool.clone();
         ctx.spawn(stream.map_err(Error::from)
             .for_each(move |mut req| {
                 let mut raw_put = req.take_raw_put();
@@ -678,7 +682,7 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
                                            raw_put.take_value(),
                                            cb).unwrap();
                 let tx = tx.clone();
-                future.map_err(Error::from)
+                let f = future.map_err(Error::from)
                     .map(move |v| {
                         let mut raw_put = RawPutResponse::new();
                         if let Some(err) = extract_region_error(&v) {
@@ -692,7 +696,9 @@ impl<T: RaftStoreRouter + 'static> tikvpb_grpc::Tikv for Service<T> {
                         resp
                     })
                     .and_then(move |res| tx.send((res, WriteFlags::default())).map_err(|e| box_err!(e)))
-                    .map(|_| ())
+                    .map(|_| ());
+                pool.spawn(f).forget();
+                Ok(())
             })
             .map_err(|e| error!("rawkv stream err: {}", e)));
     }
