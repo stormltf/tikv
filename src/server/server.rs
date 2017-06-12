@@ -18,7 +18,7 @@ use std::net::{SocketAddr, IpAddr};
 use std::str::FromStr;
 
 use mio::{Handler, EventLoop, EventLoopConfig};
-use grpc::{Server as GrpcServer, ServerBuilder, Environment, ChannelBuilder};
+use grpc::{Server as GrpcServer, ServerBuilder, Environment, EnvBuilder, ChannelBuilder};
 use kvproto::raft_serverpb::RaftMessage;
 use kvproto::tikvpb_grpc::*;
 use util::worker::{Stopped, Worker};
@@ -60,12 +60,13 @@ pub struct ServerChannel<T: RaftStoreRouter + 'static> {
 }
 
 pub struct Server<T: RaftStoreRouter + 'static, S: StoreAddrResolver> {
-    env: Arc<Environment>,
+    env2: Arc<Environment>,
     cfg: Config,
     // Channel for sending eventloop messages.
     sendch: SendCh<Msg>,
     // Grpc server.
-    grpc_server: GrpcServer,
+    grpc_server1: GrpcServer,
+    grpc_server2: GrpcServer,
     local_addr: SocketAddr,
     // Addrs map for communicating with other raft stores.
     store_addrs: HashMap<u64, SocketAddr>,
@@ -96,34 +97,58 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Server<T, S> {
         let end_point_worker = Worker::new("end-point-worker");
         let snap_worker = Worker::new("snap-handler");
 
-        let h = Service::new(storage.clone(),
-                             end_point_worker.scheduler(),
-                             ch.raft_router.clone(),
-                             snap_worker.scheduler());
-        let env = Arc::new(Environment::new(cfg.grpc_concurrency));
         let addr = try!(SocketAddr::from_str(&cfg.addr));
         let ip = format!("{}", addr.ip());
-        let channel_args = ChannelBuilder::new(env.clone())
+
+        let h1 = Service::new(storage.clone(),
+                              end_point_worker.scheduler(),
+                              ch.raft_router.clone(),
+                              snap_worker.scheduler());
+        let env1 = Arc::new(EnvBuilder::new()
+            .cq_count(cfg.grpc_concurrency)
+            .name_prefix("grpc-tidb")
+            .build());
+        let channel_args1 = ChannelBuilder::new(env1.clone())
             .max_concurrent_stream(cfg.grpc_concurrent_stream)
             .max_receive_message_len(MAX_GRPC_RECV_MSG_LEN)
             .max_send_message_len(MAX_GRPC_SEND_MSG_LEN)
             .build_args();
-        let grpc_server = try!(ServerBuilder::new(env.clone())
-            .register_service(create_tikv(h))
-            .bind(ip, addr.port())
-            .channel_args(channel_args)
+        let grpc_server1 = try!(ServerBuilder::new(env1.clone())
+            .register_service(create_tikv(h1))
+            .bind(ip.clone(), addr.port())
+            .channel_args(channel_args1)
+            .build());
+
+        let h2 = Service::new(storage.clone(),
+                              end_point_worker.scheduler(),
+                              ch.raft_router.clone(),
+                              snap_worker.scheduler());
+        let env2 = Arc::new(EnvBuilder::new()
+            .cq_count(cfg.grpc_concurrency)
+            .name_prefix("grpc-tikv")
+            .build());
+        let channel_args2 = ChannelBuilder::new(env2.clone())
+            .max_concurrent_stream(cfg.grpc_concurrent_stream)
+            .max_receive_message_len(MAX_GRPC_RECV_MSG_LEN)
+            .max_send_message_len(MAX_GRPC_SEND_MSG_LEN)
+            .build_args();
+        let grpc_server2 = try!(ServerBuilder::new(env2.clone())
+            .register_service(create_tikv(h2))
+            .bind(ip, addr.port()+1)
+            .channel_args(channel_args2)
             .build());
 
         let addr = {
-            let (ref host, port) = grpc_server.bind_addrs()[0];
+            let (ref host, port) = grpc_server1.bind_addrs()[0];
             SocketAddr::new(try!(IpAddr::from_str(host)), port as u16)
         };
 
         let svr = Server {
-            env: env.clone(),
+            env2: env2.clone(),
             cfg: cfg.to_owned(),
             sendch: sendch,
-            grpc_server: grpc_server,
+            grpc_server1: grpc_server1,
+            grpc_server2: grpc_server2,
             local_addr: addr,
             store_addrs: HashMap::default(),
             store_resolving: HashSet::default(),
@@ -133,7 +158,7 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Server<T, S> {
             end_point_worker: end_point_worker,
             snap_mgr: snap_mgr,
             snap_worker: snap_worker,
-            raft_client: RaftClient::new(env),
+            raft_client: RaftClient::new(env2),
         };
 
         Ok(svr)
@@ -147,12 +172,13 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Server<T, S> {
                                           self.cfg.end_point_small_txn_tasks_limit);
         box_try!(self.end_point_worker.start_batch(end_point, DEFAULT_COPROCESSOR_BATCH));
         let ch = self.get_sendch();
-        let snap_runner = SnapHandler::new(self.env.clone(),
+        let snap_runner = SnapHandler::new(self.env2.clone(),
                                            self.snap_mgr.clone(),
                                            self.ch.raft_router.clone(),
                                            ch);
         box_try!(self.snap_worker.start(snap_runner));
-        self.grpc_server.start();
+        self.grpc_server1.start();
+        self.grpc_server2.start();
         info!("TiKV is ready to serve");
 
         try!(event_loop.run(self));
@@ -249,7 +275,9 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Server<T, S> {
         }
 
         RESOLVE_STORE_COUNTER.with_label_values(&["success"]).inc();
-        let sock_addr = sock_addr.unwrap();
+        let mut sock_addr = sock_addr.unwrap();
+        let port = sock_addr.port();
+        sock_addr.set_port(port+1);
         info!("resolve store {} address ok, addr {}", store_id, sock_addr);
         self.store_addrs.insert(store_id, sock_addr);
 
@@ -326,7 +354,8 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Handler for Server<T, S> {
             if let Err(e) = self.storage.stop() {
                 error!("failed to stop store: {:?}", e);
             }
-            self.grpc_server.shutdown();
+            self.grpc_server1.shutdown();
+            self.grpc_server2.shutdown();
         }
     }
 }
