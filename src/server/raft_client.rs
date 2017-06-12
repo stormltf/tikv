@@ -21,7 +21,7 @@ use grpc::{Environment, ChannelBuilder, WriteFlags};
 use kvproto::raft_serverpb::RaftMessage;
 use kvproto::tikvpb_grpc::TikvClient;
 
-use util::collections::HashMap;
+use util::collections::{HashMap, FlatMap};
 use super::{Error, Result};
 
 const GRPC_WRITE_BUFFER_SIZE: usize = 2 * 1024 * 1024;
@@ -82,20 +82,30 @@ impl RaftClient {
     }
 
     pub fn send(&mut self, addr: SocketAddr, msgs: Vec<RaftMessage>) -> Result<()> {
-        let index = msg.get_region_id() as usize % self.conn_size;
+        let mut remove_index = 0;
         let res = {
-            let conn = self.get_conn(addr, index);
-            let len = msgs.len();
+            let mut last_msg = FlatMap::new();
             let mut res = Ok(());
-            for (i, msg) in msgs.into_iter().enumerate() {
-                let flags = if i < len - 1 {
-                    WriteFlags::default().buffer_hint(true)
-                } else {
-                    WriteFlags::default()
-                };
-                res = UnboundedSender::send(&conn.stream, (msg, flags));
-                if res.is_err() {
-                    break;
+            for msg in msgs {
+                let index = msg.get_region_id() as usize % self.conn_size;
+                if let Some(msg) = last_msg.insert(index, msg) {
+                    let conn = self.get_conn(addr, index);
+                    res = UnboundedSender::send(&conn.stream,
+                                                (msg, WriteFlags::default().buffer_hint(true)));
+                    if res.is_err() {
+                        remove_index = index;
+                        break;
+                    }
+                }
+            }
+            if res.is_ok() {
+                for (index, msg) in last_msg {
+                    let conn = self.get_conn(addr, index);
+                    res = UnboundedSender::send(&conn.stream, (msg, WriteFlags::default()));
+                    if res.is_err() {
+                        remove_index = index;
+                        break;
+                    }
                 }
             }
             res
@@ -104,7 +114,7 @@ impl RaftClient {
             warn!("server: drop conn with tikv endpoint {} error: {:?}",
                   addr,
                   e);
-            self.conns.remove(&(addr, index));
+            self.conns.remove(&(addr, remove_index));
             return Err(box_err!(e));
         }
         Ok(())
