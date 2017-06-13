@@ -38,6 +38,7 @@ extern crate test;
 extern crate kvproto;
 extern crate time;
 extern crate futures;
+extern crate futures_cpupool;
 extern crate tokio_core;
 extern crate grpc;
 

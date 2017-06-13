@@ -35,6 +35,7 @@ use tikv::util::transport::SendCh;
 use tikv::storage::{Engine, CfName, ALL_CFS};
 use kvproto::raft_serverpb::{self, RaftMessage};
 use kvproto::raft_cmdpb::*;
+use futures_cpupool::CpuPool;
 
 use super::pd::TestPdClient;
 use super::transport_simulate::*;
@@ -56,6 +57,7 @@ pub struct ServerCluster {
 
 impl ServerCluster {
     pub fn new(pd_client: Arc<TestPdClient>) -> ServerCluster {
+        let pool = CpuPool::new(1);
         ServerCluster {
             routers: HashMap::new(),
             senders: HashMap::new(),
@@ -66,7 +68,7 @@ impl ServerCluster {
             store_chs: HashMap::new(),
             storages: HashMap::new(),
             snap_paths: HashMap::new(),
-            raft_client: RaftClient::new(Arc::new(Environment::new(1)), 1),
+            raft_client: RaftClient::new(Arc::new(Environment::new(1)), pool, 1),
         }
     }
 }

@@ -19,6 +19,7 @@ use std::str::FromStr;
 
 use mio::{Handler, EventLoop, EventLoopConfig};
 use grpc::{Server as GrpcServer, ServerBuilder, Environment, EnvBuilder, ChannelBuilder};
+use futures_cpupool::Builder;
 use kvproto::raft_serverpb::RaftMessage;
 use kvproto::tikvpb_grpc::*;
 use util::worker::{Stopped, Worker};
@@ -100,10 +101,13 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Server<T, S> {
         let addr = try!(SocketAddr::from_str(&cfg.addr));
         let ip = format!("{}", addr.ip());
 
+        let pool = Builder::new().name_prefix("poller").pool_size(2).create();
+
         let h1 = Service::new(storage.clone(),
                               end_point_worker.scheduler(),
                               ch.raft_router.clone(),
-                              snap_worker.scheduler());
+                              snap_worker.scheduler(),
+                              pool.clone());
         let env1 = Arc::new(EnvBuilder::new()
             .cq_count(cfg.grpc_concurrency)
             .name_prefix("grpc-tidb")
@@ -122,7 +126,8 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Server<T, S> {
         let h2 = Service::new(storage.clone(),
                               end_point_worker.scheduler(),
                               ch.raft_router.clone(),
-                              snap_worker.scheduler());
+                              snap_worker.scheduler(),
+                              pool.clone());
         let env2 = Arc::new(EnvBuilder::new()
             .cq_count(cfg.grpc_concurrency)
             .name_prefix("grpc-tikv")
@@ -158,7 +163,7 @@ impl<T: RaftStoreRouter, S: StoreAddrResolver> Server<T, S> {
             end_point_worker: end_point_worker,
             snap_mgr: snap_mgr,
             snap_worker: snap_worker,
-            raft_client: RaftClient::new(env2, cfg.grpc_raft_conn_size),
+            raft_client: RaftClient::new(env2, pool, cfg.grpc_raft_conn_size),
         };
 
         Ok(svr)

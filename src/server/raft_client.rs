@@ -17,11 +17,12 @@ use std::net::SocketAddr;
 use futures::sync::mpsc::{self, UnboundedSender};
 use futures::sync::oneshot::{self, Sender};
 use futures::{Future, Sink, Stream};
+use futures_cpupool::CpuPool;
 use grpc::{Environment, ChannelBuilder, WriteFlags};
 use kvproto::raft_serverpb::RaftMessage;
 use kvproto::tikvpb_grpc::TikvClient;
 
-use util::collections::HashMap;
+use util::collections::{HashMap, HashMapEntry};
 use super::{Error, Result};
 
 struct Conn {
@@ -31,7 +32,7 @@ struct Conn {
 }
 
 impl Conn {
-    fn new(env: Arc<Environment>, addr: SocketAddr) -> Conn {
+    fn new(env: Arc<Environment>, pool: CpuPool, addr: SocketAddr) -> Conn {
         info!("server: new connection with tikv endpoint: {}", addr);
 
         let channel = ChannelBuilder::new(env).connect(&format!("{}", addr));
@@ -39,13 +40,13 @@ impl Conn {
         let (tx, rx) = mpsc::unbounded();
         let (tx_close, rx_close) = oneshot::channel();
         let (sink, _) = client.raft();
-        client.spawn(rx_close.map_err(|_| ())
+        pool.spawn(rx_close.map_err(|_| ())
             .select(sink.sink_map_err(Error::from)
                 .send_all(rx.map_err(|_| Error::Sink))
                 .map(|_| ())
                 .map_err(move |e| warn!("send raftmessage to {} failed: {:?}", addr, e)))
             .map(|_| ())
-            .map_err(|_| ()));
+            .map_err(|_| ())).forget();
         Conn {
             _client: client,
             stream: tx,
@@ -58,23 +59,28 @@ impl Conn {
 pub struct RaftClient {
     env: Arc<Environment>,
     conns: HashMap<(SocketAddr, usize), Conn>,
+    pool: CpuPool,
     conn_size: usize,
 }
 
 impl RaftClient {
-    pub fn new(env: Arc<Environment>, conn_size: usize) -> RaftClient {
+    pub fn new(env: Arc<Environment>, pool: CpuPool, conn_size: usize) -> RaftClient {
         RaftClient {
             env: env,
             conns: HashMap::default(),
+            pool: pool,
             conn_size: conn_size,
         }
     }
 
     fn get_conn(&mut self, addr: SocketAddr, index: usize) -> &Conn {
         let env = self.env.clone();
-        self.conns
-            .entry((addr, index))
-            .or_insert_with(|| Conn::new(env, addr))
+        match self.conns.entry((addr, index)) {
+            HashMapEntry::Occupied(e) => e.into_mut(),
+            HashMapEntry::Vacant(e) => {
+                e.insert(Conn::new(env, self.pool.clone(), addr))
+            },
+        }
     }
 
     pub fn send(&mut self, addr: SocketAddr, msg: RaftMessage) -> Result<()> {
